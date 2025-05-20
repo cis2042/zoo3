@@ -3,30 +3,43 @@ const cors = require('cors');
 const morgan = require('morgan');
 const dotenv = require('dotenv');
 const path = require('path');
+const swaggerUi = require('swagger-ui-express');
+const fs = require('fs');
 
-// Load environment variables
+// 導入配置和中間件
+const swaggerSpec = require('./config/swagger');
+const logger = require('./config/logger');
+const { notFoundHandler, errorHandler } = require('./middleware/errorHandler');
+
+// 確保日誌目錄存在
+const logsDir = path.join(__dirname, '../logs');
+if (!fs.existsSync(logsDir)) {
+  fs.mkdirSync(logsDir, { recursive: true });
+}
+
+// 加載環境變量
 dotenv.config();
 
-// Create Express app
+// 創建 Express 應用
 const app = express();
 const PORT = process.env.PORT || 8080;
 
-// CORS configuration
+// CORS 配置
 const corsOptions = {
-  origin: '*', // Allow all origins
+  origin: '*', // 允許所有來源
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization']
 };
 
-// Middleware
+// 中間件
 app.use(cors(corsOptions));
-app.use(morgan('dev'));
+app.use(morgan('combined', { stream: logger.stream })); // 使用 Winston 記錄請求
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Debug middleware to log all requests
+// 調試中間件記錄所有請求
 app.use((req, res, next) => {
-  console.log(`${req.method} ${req.url}`);
+  logger.debug(`${req.method} ${req.url}`);
   next();
 });
 
@@ -208,45 +221,146 @@ const db = {
   referrals: []
 };
 
-// API routes - Tasks
+/**
+ * @swagger
+ * components:
+ *   schemas:
+ *     Task:
+ *       type: object
+ *       required:
+ *         - id
+ *         - title
+ *         - reward_amount
+ *         - reward_token
+ *         - task_type
+ *       properties:
+ *         id:
+ *           type: string
+ *           description: 任務 ID
+ *         title:
+ *           type: string
+ *           description: 任務標題
+ *         description:
+ *           type: string
+ *           description: 任務描述
+ *         reward_amount:
+ *           type: number
+ *           description: 獎勵金額
+ *         reward_token:
+ *           type: string
+ *           description: 獎勵代幣類型
+ *           enum: [KAIA, ZOO, WBTC]
+ *         task_type:
+ *           type: string
+ *           description: 任務類型
+ *           enum: [discord, social_share, quiz, connect_wallet, visit_pages]
+ *         frequency:
+ *           type: string
+ *           description: 任務頻率
+ *           enum: [once, daily, weekly, monthly]
+ *         category:
+ *           type: string
+ *           description: 任務類別
+ *           enum: [social, general, achievement]
+ *         difficulty:
+ *           type: string
+ *           description: 任務難度
+ *           enum: [easy, medium, hard]
+ *         is_active:
+ *           type: boolean
+ *           description: 任務是否啟用
+ *         redirect_url:
+ *           type: string
+ *           nullable: true
+ *           description: 重定向 URL
+ *         created_at:
+ *           type: string
+ *           format: date-time
+ *           description: 創建時間
+ *         updated_at:
+ *           type: string
+ *           format: date-time
+ *           description: 更新時間
+ *         completed:
+ *           type: boolean
+ *           description: 用戶是否已完成此任務
+ *   securitySchemes:
+ *     bearerAuth:
+ *       type: http
+ *       scheme: bearer
+ *       bearerFormat: JWT
+ */
+
+/**
+ * @swagger
+ * /api/tasks:
+ *   get:
+ *     summary: 獲取所有任務
+ *     description: 返回所有可用的任務。如果用戶已認證，則會顯示任務完成狀態。
+ *     tags: [Tasks]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: 成功獲取任務列表
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 message:
+ *                   type: string
+ *                   example: 獲取任務列表成功
+ *                 data:
+ *                   type: array
+ *                   items:
+ *                     $ref: '#/components/schemas/Task'
+ *       500:
+ *         description: 服務器錯誤
+ */
 app.get('/api/tasks', (req, res) => {
-  // Check if user is authenticated from Authorization header
-  const authHeader = req.headers.authorization;
-  let userId = null;
+  try {
+    const responseFormatter = require('./utils/responseFormatter');
 
-  if (authHeader && authHeader.startsWith('Bearer ')) {
-    // Extract the token
-    const token = authHeader.split(' ')[1];
+    // 檢查用戶是否已認證
+    const authHeader = req.headers.authorization;
+    let userId = null;
 
-    try {
-      // Simple token decoding (for demo)
-      userId = Buffer.from(token, 'base64').toString();
-    } catch (error) {
-      console.error('Token decoding error:', error);
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      // 提取令牌
+      const token = authHeader.split(' ')[1];
+
+      try {
+        // 簡單的令牌解碼（演示用）
+        userId = Buffer.from(token, 'base64').toString();
+      } catch (error) {
+        logger.error('令牌解碼錯誤:', error);
+      }
     }
+
+    // 如果用戶已認證，添加任務完成狀態
+    if (userId) {
+      const tasksWithStatus = db.tasks.map(task => {
+        const completed = db.task_completions.some(
+          tc => tc.user_id === userId && tc.task_id === task.id
+        );
+
+        return { ...task, completed };
+      });
+
+      return responseFormatter.success(res, tasksWithStatus, '獲取任務列表成功');
+    }
+
+    // 否則，返回不帶完成狀態的任務
+    return responseFormatter.success(res, db.tasks, '獲取任務列表成功');
+  } catch (error) {
+    logger.error('獲取任務列表錯誤:', error);
+    const { AppError } = require('./middleware/errorHandler');
+    next(new AppError('獲取任務列表時發生錯誤', 500));
   }
-
-  // If user is authenticated, add completion status to tasks
-  if (userId) {
-    const tasksWithStatus = db.tasks.map(task => {
-      const completed = db.task_completions.some(
-        tc => tc.user_id === userId && tc.task_id === task.id
-      );
-
-      return { ...task, completed };
-    });
-
-    return res.json({
-      success: true,
-      data: tasksWithStatus
-    });
-  }
-
-  // Otherwise, return tasks without completion status
-  res.json({
-    success: true,
-    data: db.tasks
-  });
 });
 
 app.get('/api/tasks/:id', (req, res) => {
@@ -1968,11 +2082,39 @@ app.post('/api/achievements/:id/claim', authenticateUser, (req, res) => {
   }
 });
 
-// Root route
+/**
+ * @swagger
+ * /:
+ *   get:
+ *     summary: API 根路徑
+ *     description: 返回 API 的基本信息和可用端點
+ *     responses:
+ *       200:
+ *         description: 成功
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 message:
+ *                   type: string
+ *                   example: 歡迎使用 ZOO3 API
+ *                 documentation:
+ *                   type: string
+ *                   example: /api-docs
+ *                 version:
+ *                   type: string
+ *                   example: 1.0.0
+ *                 endpoints:
+ *                   type: object
+ */
 app.get('/', (req, res) => {
-  res.status(200).json({
-    success: true,
-    message: '歡迎使用 ZOO3 API',
+  const responseFormatter = require('./utils/responseFormatter');
+
+  return responseFormatter.success(res, {
     documentation: '/api-docs',
     version: '1.0.0',
     endpoints: {
@@ -1985,16 +2127,68 @@ app.get('/', (req, res) => {
       achievements: '/api/achievements',
       admin: '/api/admin'
     }
-  });
+  }, '歡迎使用 ZOO3 API');
 });
 
-// Health check endpoint
+/**
+ * @swagger
+ * /health:
+ *   get:
+ *     summary: 健康檢查端點
+ *     description: 用於檢查 API 服務是否正常運行
+ *     responses:
+ *       200:
+ *         description: 服務正常運行
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 status:
+ *                   type: string
+ *                   example: ok
+ */
 app.get('/health', (req, res) => {
   res.status(200).json({ status: 'ok' });
 });
 
-// Start server
+// Swagger UI 路由
+app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec, {
+  customCss: '.swagger-ui .topbar { display: none }',
+  customSiteTitle: 'ZOO3 API 文檔',
+  customfavIcon: '/favicon.ico'
+}));
+
+// 404 錯誤處理
+app.use(notFoundHandler);
+
+// 全局錯誤處理
+app.use(errorHandler);
+
+// 啟動服務器
 const server = app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-  console.log(`API available at http://localhost:${PORT}/api/tasks`);
+  logger.info(`服務器運行在端口 ${PORT}`);
+  logger.info(`API 文檔可在 http://localhost:${PORT}/api-docs 查看`);
+  logger.info(`API 可在 http://localhost:${PORT}/api/tasks 訪問`);
+  console.log(`服務器運行在端口 ${PORT}`);
+  console.log(`API 文檔可在 http://localhost:${PORT}/api-docs 查看`);
+  console.log(`API 可在 http://localhost:${PORT}/api/tasks 訪問`);
+});
+
+// 優雅關閉
+process.on('SIGTERM', () => {
+  logger.info('SIGTERM 信號收到，關閉 HTTP 服務器');
+  server.close(() => {
+    logger.info('HTTP 服務器已關閉');
+    process.exit(0);
+  });
+});
+
+process.on('uncaughtException', (error) => {
+  logger.error('未捕獲的異常', error);
+  process.exit(1);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  logger.error('未處理的拒絕', { reason, promise });
 });

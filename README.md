@@ -227,12 +227,15 @@ ZOO3 是一個基於區塊鏈的任務獎勵平台，用戶可以完成各種任
 
 ## API 文檔
 
+API 文檔使用 Swagger UI 實現，可以通過以下地址訪問：
+
+- **Swagger UI**: http://localhost:8080/api-docs
+
 ### 認證 API
 
-- `POST /api/auth/line-login` - LINE 登錄
-- `POST /api/auth/verify-line-user` - 驗證 LINE 用戶
+- `POST /api/auth/register` - 註冊新用戶
+- `POST /api/auth/login` - 用戶登錄
 - `GET /api/auth/me` - 獲取當前用戶信息
-- `POST /api/auth/refresh-token` - 刷新令牌
 
 ### 任務 API
 
